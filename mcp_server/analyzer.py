@@ -60,6 +60,17 @@ def find_idle_instances(ec2_client) -> list[dict]:
     return instances
 
 
+def count_empty_target_groups(elbv2_client, lb_arn: str) -> int:
+    """Number of the load balancer's target groups with no registered targets."""
+    tg_resp = elbv2_client.describe_target_groups(LoadBalancerArn=lb_arn)
+    empty = 0
+    for tg in tg_resp.get("TargetGroups", []):
+        health = elbv2_client.describe_target_health(TargetGroupArn=tg["TargetGroupArn"])
+        if not health.get("TargetHealthDescriptions"):
+            empty += 1
+    return empty
+
+
 def find_idle_load_balancers(elbv2_client) -> list[dict]:
     load_balancers = []
     paginator = elbv2_client.get_paginator("describe_load_balancers")
@@ -71,13 +82,7 @@ def find_idle_load_balancers(elbv2_client) -> list[dict]:
             if not _is_demo_scoped(tags):
                 continue
 
-            tg_resp = elbv2_client.describe_target_groups(LoadBalancerArn=lb["LoadBalancerArn"])
-            empty_target_groups = 0
-            for tg in tg_resp.get("TargetGroups", []):
-                health = elbv2_client.describe_target_health(TargetGroupArn=tg["TargetGroupArn"])
-                if not health.get("TargetHealthDescriptions"):
-                    empty_target_groups += 1
-
+            empty_target_groups = count_empty_target_groups(elbv2_client, lb["LoadBalancerArn"])
             if empty_target_groups == 0:
                 continue
 

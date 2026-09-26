@@ -6,3 +6,4 @@ venv/
 audit_log.jsonl
 .pytest_cache/
 *.egg-info/
+.mcp_token

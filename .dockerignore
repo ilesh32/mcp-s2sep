@@ -8,3 +8,6 @@ __pycache__
 audit_log.jsonl
 tests/
 README.md
+.mcp_token
+scripts/
+requirements-dev.txt
