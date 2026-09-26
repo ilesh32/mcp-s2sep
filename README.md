@@ -25,7 +25,7 @@ servers are meant to run in.
 
 ```
 mcp_server/
-├── server.py       # registers analyze_infrastructure + execute_teardown
+├── server.py       # MCP server (mcp SDK v2): registers both tools, stdio/HTTP transport
 ├── aws_client.py   # boto3 session/client factory, region config
 ├── analyzer.py     # analyze_infrastructure logic
 ├── teardown.py     # execute_teardown: provenance check, re-verify, dependency ordering
@@ -33,6 +33,7 @@ mcp_server/
 tests/
 ├── test_analyzer.py   # moto-mocked, no real AWS calls
 └── test_teardown.py   # asserts dry_run path never calls Delete*/Terminate*
+Dockerfile            # container build for the streamable-http deployment
 ```
 
 ## Setup
@@ -90,3 +91,58 @@ process, not a local import) and wire an approval gate in front of
 `execute_teardown` — this server enforces its own safety invariants
 (provenance, blast-radius cap, kill switch) but does **not** enforce human
 approval itself. That belongs at the harness/orchestration layer.
+
+The provenance check is tracked server-side: every id returned by
+`analyze_infrastructure` during the server process's lifetime is
+remembered, and `execute_teardown` rejects anything else. This means one
+running container instance corresponds to one reasoning session — don't
+share a single deployed instance across unrelated agent runs if you need
+strict per-session provenance.
+
+## Running with Docker
+
+Build and run locally (stdio is the default transport, matching how a
+harness spawns an MCP server as a subprocess):
+
+```bash
+docker build -t cloud-cost-janitor-mcp .
+docker run -it --rm \
+  --env-file .env \
+  cloud-cost-janitor-mcp
+```
+
+For a network-reachable deployment, the image defaults to
+`MCP_TRANSPORT=streamable-http` on `0.0.0.0:8000` (set in the Dockerfile),
+so just publish the port:
+
+```bash
+docker run -d --name cloud-cost-janitor-mcp \
+  -p 8000:8000 \
+  --env-file .env \
+  cloud-cost-janitor-mcp
+```
+
+The server is then reachable at `http://localhost:8000/mcp` (streamable
+HTTP transport). Verify it's up:
+
+```bash
+curl -i -X POST http://localhost:8000/mcp \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"smoke-test","version":"0.1"}}}'
+```
+
+A 200 response with the server's `capabilities` confirms it's serving
+correctly. Environment variables the container reads:
+
+| Variable | Default (in image) | Purpose |
+| --- | --- | --- |
+| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_REGION` | — (required) | scoped IAM credentials, see above |
+| `MCP_TRANSPORT` | `streamable-http` | `stdio`, `sse`, or `streamable-http` |
+| `MCP_HOST` / `MCP_PORT` | `0.0.0.0` / `8000` | bind address for `sse`/`streamable-http` |
+| `AUDIT_LOG_PATH` | `/app/data/audit_log.jsonl` | mount a volume at `/app/data` to persist the audit log across container restarts |
+| `TEARDOWN_DISABLED` | unset | set to `true` as a kill switch |
+
+The container runs as a non-root user and never bakes credentials into the
+image — pass them at runtime via `--env-file` or your orchestrator's
+secrets mechanism.
